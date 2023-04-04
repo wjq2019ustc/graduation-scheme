@@ -8,6 +8,7 @@ from qns.simulator.ts import Time
 from qns.network.requests import Request
 from qns.network.route.route import RouteImpl
 from capacity_bb84 import BB84RecvApp, BB84SendApp
+import math
 
 
 # def classify_request(net: QuantumNetwork):
@@ -338,6 +339,19 @@ class RecvRequestApp(Application):
                 self.already_accept.remove(sym_msg)
                 send_bb84, recv_bb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel_name)    # time_flag and capacity
                 rate, cur_time_tolerance, time_span = get_info(send_bb84)
+                back_time = Time(math.floor(key_requirement / rate))
+                if back_time > time_span:
+                    simulator: Simulator = self.get_simulator
+                    send_bb84.time_flag = simulator.tc
+                    increase = rate*(back_time-time_span)
+                    if increase < send_bb84.pool_capacity:
+                        send_bb84.current_pool = increase
+                        recv_bb84.current_pool = increase
+                    else:
+                        send_bb84.current_pool = send_bb84.pool_capacity
+                        recv_bb84.current_pool = recv_bb84.pool_capacity
+                else:
+                    send_bb84.time_flag = cur_time_tolerance - back_time
 
     def distribution(self, queue: list, qchannel_name: str):
         sorted_queue = queue_sort(queue)
