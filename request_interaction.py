@@ -272,12 +272,12 @@ class RecvRequestApp(Application):
             msg = packet.get()
             recv_time = event.t
             # handling the receiving packet
-            aim_msg = msg["aim"]
-            sym_msg = msg["symbol"]
-            qchannel_name = msg["aimed qchannel"]
-            request_times = msg["request times"]
-            key_requirement = msg["key requirement"]
-            delay_tolerance = msg["delay"]
+            aim_msg = msg.get("aim")
+            sym_msg = msg.get("symbol")
+            qchannel_name = msg.get("aimed qchannel")
+            request_times = msg.get("request times")
+            key_requirement = msg.get("key requirement")
+            delay_tolerance = msg.get("delay")
             src = packet.src
             if aim_msg == "require":    # 中间节点
                 flag = if_already_in(self.already_accept, sym_msg)   # 是否已经在准备服务的名单里
@@ -295,7 +295,7 @@ class RecvRequestApp(Application):
                         self.queue_list[qchannel_name] = []
                         self.distribution(queue, qchannel_name)
             elif aim_msg == "answer":   # 源节点
-                content = msg["content"]
+                content = msg.get("content")
                 if content == "yes":
                     # 先加入链路同意的列表，判断整条路径上的链路均同意了，再加入到already_accept
                     stamp: dict = self.request_management[sym_msg]

@@ -16,13 +16,13 @@ def drop_rate(length):   # 0.2db/km
     return 1-np.power(10, -length/50000)
 
 
-end_simu_time = 10
+end_simu_time = 1000
 q_length = 100000
 c_length = 100000
 light_speed = 299791458
 send_rate = 1000
 s_time = 0
-e_time = end_simu_time
+e_time = end_simu_time - 10
 s_request = 10
 e_request = 100
 s_delay = 10
