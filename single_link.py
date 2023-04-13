@@ -20,14 +20,14 @@ def drop_rate(length):   # 0.2db/km
 q_length = 100
 c_length = 100
 light_speed = 299791458
-end_simu_time = 200
+end_simu_time = 100
 send_rate = 6
 s_time = 0
 e_time = end_simu_time - 90
 s_request = 300
 e_request = 400
 s_delay = 5
-e_delay = end_simu_time-94    # float('inf')
+e_delay = end_simu_time-90    # float('inf')
 accuracy = 100000
 
 #   n1 = QNode("n1")
@@ -58,7 +58,6 @@ net_bb84rapps = {}
 net_bb84sapps = {}
 net_succ_request = {}
 net_fail_request = {}
-request_list = {}
 #   net_bb84sapps[n1.name] = []
 #   net_bb84rapps[n1.name] = []
 #   net_succ_request[n1.name] = []
@@ -93,7 +92,6 @@ for node in net.nodes:
     net_bb84rapps[node.name] = []
     net_succ_request[node.name] = []
     net_fail_request[node.name] = []
-    request_list[node.name] = []
 for qchannel in net.qchannels:
     restrict[qchannel.name] = False
     (src, dest) = qchannel.node_list
@@ -114,15 +112,15 @@ net.build_route()
 net_request = random_requests(nodes=net.nodes, number=3, start_time=s_time, end_time=e_time, start_request=s_request, end_request=e_request,
                               start_delay=s_delay, end_delay=e_delay, allow_overlay=True)
 #   返回一定数量的请求， 接下来分给对应节点
-for j in range(len(net_request)):
-    i = net_request[j]
-    request_list[i.get("src").name].append(i)
-    print(i["src"], i["dest"], i["attr"])
+#   for j in range(len(net_request)):
+#       i = net_request[j]
+#       request_list[i.get("src").name].append(i)
+#       print(i["src"], i["dest"], i["attr"])
 
 for node in net.nodes:
-    start_time_order(request_list[node.name], 0, len(request_list[node.name])-1)
+    start_time_order(net_request[node.name], 0, len(net_request[node.name])-1)
     sendre = SendRequestApp(net=net, node=node, restrict=restrict, restrict_time=restrict_time, request_management=request_management,
-                            fail_request=net_fail_request[node.name], request_list=request_list[node.name])   # , request_list=node.requests
+                            fail_request=net_fail_request[node.name], request_list=net_request[node.name])   # , request_list=node.requests
     recvre = RecvRequestApp(net=net, node=node, bb84rapps=net_bb84rapps[node.name], bb84sapps=net_bb84sapps[node.name], restrict=restrict, restrict_time=restrict_time,
                             request_management=request_management, already_accept=[], succ_request=net_succ_request[node.name])
     node.add_apps(sendre)

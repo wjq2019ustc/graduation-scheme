@@ -25,27 +25,26 @@ request_times_restrict = 4
 accuracy = 100000  # {default_accuracy} time slots per second
 
 
-def start_time_order(re_list: list[dict], s: int, e: int):
+def start_time_order(re_list: list[Request], s: int, e: int):
     if s >= e:
         return
-    val = re_list[e]["attr"]["start time"]
+    val = re_list[e].attr["start time"]
     left = s
     right = e
     while left < right:
-        while re_list[left]["attr"]["start time"] < val and left < right:
+        while re_list[left].attr["start time"] < val and left < right:
             left += 1
-        while re_list[right]["attr"]["start time"] >= val and left < right:
+        while re_list[right].attr["start time"] >= val and left < right:
             right -= 1
         if left < right:
             temp = re_list[left]
             re_list[left] = re_list[right]
             re_list[right] = temp
-    if re_list[left]["attr"]["start time"] > val:
-        temp = re_list[left]
-        re_list[left] = re_list[e]
-        re_list[e] = temp
-    else:
+    if re_list[left].attr["start time"] < val:
         left += 1
+    temp = re_list[left]
+    re_list[left] = re_list[e]
+    re_list[e] = temp
     start_time_order(re_list, s, left-1)
     start_time_order(re_list, left+1, e)
 
@@ -161,7 +160,8 @@ def queue_sort(queue: list):
             queue_up_times.append(item)
     queue_up_times.sort(key=lambda s: s["request times"], reverse=True)     # 没超过阈值，不需要按照路由次数排序
     if len(queue_up_times) > 0 and len(queue_down_times) > 0:
-        sorted_queue = queue_up_times.extend(queue_down_times)
+        queue_up_times.extend(queue_down_times)
+        sorted_queue = queue_up_times
     elif len(queue_down_times) > 0:
         sorted_queue = queue_down_times
     else:
@@ -178,7 +178,6 @@ def create_request_info(management: dict, symbol: str, path: tuple[float, QNode,
 
 
 def update_request_info(node: QNode, management: dict, symbol: str):     # 把已经预留资源的链路取消锁定
-    management[symbol]["flag"] = False
     for item in management[symbol]["list"]:
         src: QNode = item["src"]
         qchannel_name = item["aimed qchannel"]
@@ -229,23 +228,23 @@ class SendRequestApp(Application):
         self._node = node
         if len(self.request_list) > 0:
             re = self.request_list.pop(0)
-            temp = re["attr"]["start time"]
+            temp = re.attr["start time"]
             t = temp+simulator.ts
             # print(re.attr, t)
             event = func_to_event(t, self.send_packet, re=re)
             self._simulator.add_event(event)
 
-    def send_packet(self, re: dict):
+    def send_packet(self, re: Request):
         if len(self.request_list) > 0:
             r = self.request_list.pop(0)
-            temp = r["attr"]["start time"]
+            temp = r.attr["start time"]
             t = temp+self._simulator.ts
             # print(re.attr, t)
             event = func_to_event(t, self.send_packet, re=r)
             self._simulator.add_event(event)
-        src = re["src"]
-        dest = re["dest"]
-        attr = re["attr"]
+        src = re.src
+        dest = re.dest
+        attr = re.attr
         if self._simulator.tc.time_slot > attr["start time"].time_slot + math.floor(attr["delay"]*accuracy):   # 无法服务
             print(f"{src.name}->{dest.name} is failed in serving currently: {attr}")
             self.fail_request.append(re)
@@ -312,8 +311,7 @@ class RecvRequestApp(Application):
         self.qchannels = get_qchannel_list(node)
         self.event_number_list, self.time_info, self.queue_list, self.first_time_strigger = initialize(self.qchannels)
         #   event strigger  time strigger  request queueing   'first' strigger
-        self.add_handler(self.handleClassicPacket, [RecvClassicPacket], [])
-        
+        self.add_handler(self.handleClassicPacket, [RecvClassicPacket], [])     
         #   t = simulator.ts
         #   str_t = t+Time(sec=time_trigger)
         self._simulator = simulator
@@ -325,6 +323,7 @@ class RecvRequestApp(Application):
     def distribution(self, queue: list, qchannel_name: str):
         sorted_queue = queue_sort(queue)
         for item in sorted_queue:
+            print("processing:", item)
             key_requirement = item["key requirement"]
             delay_tolerance = item["delay"]
             send_bb84, recv_bb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel_name)
@@ -376,7 +375,7 @@ class RecvRequestApp(Application):
                 queue = self.queue_list[qchannel_name]
                 self.queue_list[qchannel_name] = []
                 self.distribution(queue, qchannel_name)
-                self.first_time_strigger[qchannel_name] = True
+            self.first_time_strigger[qchannel_name] = True
 
     def handleClassicPacket(self, node: QNode, event: Event):
         # receive a classic packet，假设目的节点就是本节点，否则被前方的app转发走了
@@ -445,14 +444,15 @@ class RecvRequestApp(Application):
                     if stamp.get("flag"):
                         path = self.request_management[sym_msg]["path"]
                         dest = path[2][-1]
+                        self.request_management[sym_msg]["flag"] = False
                         start_time = simulator.tc
                         request_times += 1
                         attr: dict = {"start time": start_time, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
-                        #   re = Request(src=self._node, dest=dest, attr=attr)
-                        re: dict = {}
-                        re["src"] = src
-                        re["dest"] = dest
-                        re["attr"] = attr
+                        re = Request(src=self._node, dest=dest, attr=attr)
+                        #   re: dict = {}
+                        #   re["src"] = src
+                        #   re["dest"] = dest
+                        #   re["attr"] = attr
                         # 重新寻路
                         node: QNode = self._node
                         app: Application = node.get_apps(SendRequestApp).pop(0)
