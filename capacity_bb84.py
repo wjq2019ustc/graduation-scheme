@@ -38,7 +38,7 @@ class BB84SendApp(Application):
         self.qubit_list = {}
         self.basis_list = {}
         self.measure_list = {}
-        self.time_flag = Time(sec=0)    # 初始化时间标记
+        self.time_flag = 0   # 初始化时间标记
 
         self.pool_capacity = capacity  # 密钥池容量
         self.current_pool = 0   # 当前密钥池存储量
@@ -64,12 +64,14 @@ class BB84SendApp(Application):
         #     self._simulator.add_event(event)
 
     def handleClassicPacket(self, node: QNode, event: Event):
-        self.check_basis(event)
+        return self.check_basis(event)
 
     def check_basis(self, event: RecvClassicPacket):
         packet = event.packet
         msg: dict = packet.get()
         id = msg.get("id")
+        if id is None:      # request packet
+            return False
         basis_dest = msg.get("basis")
 
         ret_dest = msg.get("ret")
@@ -83,7 +85,7 @@ class BB84SendApp(Application):
             self.succ_key_pool[id] = self.measure_list[id]
             s: Simulator = self._simulator
             t = s.tc
-            if t > self.time_flag and self.current_pool < self.pool_capacity:  # 当去除满足的请求所需密钥后，再向密钥池填充
+            if t.time_slot >= self.time_flag and self.current_pool < self.pool_capacity:  # 当去除满足的请求所需密钥后，再向密钥池填充
                 self.current_pool += 1
                 flag = True
         else:
@@ -93,6 +95,7 @@ class BB84SendApp(Application):
         packet = ClassicPacket(msg={"id": id, "basis": basis_src,
                                "ret": self.measure_list[id], "flag": flag}, src=self._node, dest=self.dest)
         self.cchannel.send(packet, next_hop=self.dest)
+        return True
 
     def send_qubit(self):
 
@@ -152,6 +155,8 @@ class BB84RecvApp(Application):
         packet = event.packet
         msg: dict = packet.get()
         id = msg.get("id")
+        if id is None:  # request packet
+            return False
         basis_src = msg.get("basis")
 
         # qubit = self.qubit_list[id]
@@ -169,6 +174,7 @@ class BB84RecvApp(Application):
         else:
             # log.info(f"[{self._simulator.current_time}] dest check {id} basis fail")
             self.fail_number += 1
+        return True
 
     def recv(self, event: RecvQubitPacket):
         qubit: Qubit = event.qubit

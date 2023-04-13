@@ -6,7 +6,7 @@ from qns.simulator.event import func_to_event, Event
 from qns.simulator.simulator import Simulator
 from qns.simulator.ts import Time
 from qns.network.requests import Request
-from qns.network.route.route import RouteImpl
+from qns.network.network import QuantumNetwork
 from capacity_bb84 import BB84RecvApp, BB84SendApp
 import math
 
@@ -22,24 +22,51 @@ event_trigger = 3
 time_trigger = 2    # second
 request_times_restrict = 4
 
+accuracy = 100000  # {default_accuracy} time slots per second
+
+
+def start_time_order(re_list: list[dict], s: int, e: int):
+    if s >= e:
+        return
+    val = re_list[e]["attr"]["start time"]
+    left = s
+    right = e
+    while left < right:
+        while re_list[left]["attr"]["start time"] < val and left < right:
+            left += 1
+        while re_list[right]["attr"]["start time"] >= val and left < right:
+            right -= 1
+        if left < right:
+            temp = re_list[left]
+            re_list[left] = re_list[right]
+            re_list[right] = temp
+    if re_list[left]["attr"]["start time"] > val:
+        temp = re_list[left]
+        re_list[left] = re_list[e]
+        re_list[e] = temp
+    else:
+        left += 1
+    start_time_order(re_list, s, left-1)
+    start_time_order(re_list, left+1, e)
+
 
 def out_delay(qchannel: QuantumChannel, restrict_time: dict, delay: int):
     # 判断限制是否真的无法满足请求，定时器
     flag = False
-    t: Time = restrict_time[qchannel.name]
+    t = restrict_time[qchannel.name]
     s = qchannel._simulator
-    if t < s.tc:
+    if t < s.tc.time_slot:
         return flag
-    time_span = t - s.tc
-    if time_span > Time(sec=delay):
+    time_span = t - s.tc.time_slot
+    if time_span > delay*accuracy:
         flag = True
     return flag
 
 
 def restrict_is_real(qchannel: QuantumChannel, restrict_time: dict):
-    t: Time = restrict_time[qchannel.name]
+    t = restrict_time[qchannel.name]
     s = qchannel._simulator
-    if t < s.tc:
+    if t < s.tc.time_slot:
         return False
     return True
 
@@ -48,7 +75,7 @@ def has_no_restrict(path: tuple[float, QNode, list[QNode]], restrict: dict, rest
     # 判断路径上是否存在限制link
     flag = True
     for i in range(0, len(path[2])-1):
-        qchannel = path[2][i].get_qchannel(path[2][i+1])
+        qchannel: QuantumChannel = path[2][i].get_qchannel(path[2][i+1])
         result = restrict[qchannel.name]    # 返回是否存在限制
         if result and restrict_is_real(qchannel, restrict_time):
             flag = False
@@ -60,7 +87,7 @@ def check_realizable(path: tuple[float, QNode, list[QNode]], restrict: dict, res
     # 判断此条路径是否可行（是否存在不符合请求要求的link）
     flag = True
     for i in range(0, len(path[2])-1):
-        qchannel = path[2][i].get_qchannel(path[2][i+1])
+        qchannel: QuantumChannel = path[2][i].get_qchannel(path[2][i+1])
         result = restrict.get(qchannel.name)    # 返回是否存在限制
         if result and out_delay(qchannel, restrict_time, delay):
             flag = False
@@ -68,10 +95,9 @@ def check_realizable(path: tuple[float, QNode, list[QNode]], restrict: dict, res
     return flag
 
 
-def if_already_in(already_accept: list[str], symbol: str = ""):
-    accept_list = already_accept
+def if_already_in(already_accept: list[str], symbol: tuple):
     flag = False
-    for item in accept_list:
+    for item in already_accept:
         if item == symbol:
             flag = True
             break
@@ -96,11 +122,11 @@ def get_info(send_app: BB84SendApp):    # 返回pool速率以及time
     s: Simulator = send_app.get_simulator()
     ts = s.ts
     tc = s.tc
-    rate = len(send_app.succ_key_pool) / (tc-ts)
+    rate = len(send_app.succ_key_pool)*accuracy / (tc.time_slot-ts.time_slot)
     time = send_app.time_flag
-    if time < tc:
-        time = tc
-    time_span = time - tc
+    if time < tc.time_slot:
+        time = tc.time_slot
+    time_span = time - tc.time_slot
     return rate, time, time_span
 
 
@@ -113,26 +139,33 @@ def initialize(qchannels: list[QuantumChannel]):
     event = {}
     time = {}
     queue = {}
+    first_time_strigger = {}
     for qchannel in qchannels:
         event[qchannel.name] = 0
         time[qchannel.name] = []    # 表示收到的请求的到达时间
         queue[qchannel.name] = []
-    return event, time, queue
+        first_time_strigger[qchannel.name] = True   # 'first' request
+    return event, time, queue, first_time_strigger
 
 
 def queue_sort(queue: list):
     queue.sort(key=lambda s: s["key requirement"], reverse=True)    # from big to small and is stable
     queue.sort(key=lambda s: s["delay"])
     queue_up_times: list = []
-    queue_down_temes: list = []
+    queue_down_times: list = []
     for item in queue:
         temp = item["request times"]
         if temp < request_times_restrict:
-            queue_down_temes.append(item)
+            queue_down_times.append(item)
         else:
             queue_up_times.append(item)
     queue_up_times.sort(key=lambda s: s["request times"], reverse=True)     # 没超过阈值，不需要按照路由次数排序
-    sorted_queue = queue_up_times.extend(queue_down_temes)
+    if len(queue_up_times) > 0 and len(queue_down_times) > 0:
+        sorted_queue = queue_up_times.extend(queue_down_times)
+    elif len(queue_down_times) > 0:
+        sorted_queue = queue_down_times
+    else:
+        sorted_queue = queue_up_times
     return sorted_queue
 
 
@@ -149,11 +182,8 @@ def update_request_info(node: QNode, management: dict, symbol: str):     # 把�
     for item in management[symbol]["list"]:
         src: QNode = item["src"]
         qchannel_name = item["aimed qchannel"]
-        request_times = item["request times"]
         key_requirement = item["key requirement"]
-        delay_tolerance = item["delay"]
-        packet = ClassicPacket(msg={"aim": "delete", "symbol": symbol, "aimed qchannel": qchannel_name, "request times": request_times, "key requirement": key_requirement,
-                                    "delay": delay_tolerance}, src=node, dest=src)
+        packet = ClassicPacket(msg={"aim": "delete", "symbol": symbol, "aimed qchannel": qchannel_name, "key requirement": key_requirement}, src=node, dest=src)
         cchannel: ClassicChannel = src.get_cchannel(node)     # route.query(node, src)
         cchannel.send(packet=packet, next_hop=src)
     management[symbol]["list"] = []
@@ -179,35 +209,57 @@ def check_if_is_over(mess: dict):
 
 
 class SendRequestApp(Application):
-    def __init__(self, route: RouteImpl, restrict: dict, restrict_time: dict, request_management: dict, request_list: list[Request] = []):
-        # 这里是量子网络的路由表， restrict代表当前节点维护的拓扑的限制信息
+    def __init__(self, node: QNode, net: QuantumNetwork, restrict: dict, restrict_time: dict, request_management: dict, fail_request: list[Request] = [], request_list: list[Request] = []):
+        # , request_list: list[Request] = []
+        # 这里是量子网络的路由表， restrict代表当前节点维护的拓扑的限制信息, time slot
         super().__init__()
         self.request_list = request_list
+        self.fail_request = fail_request
+        #   print(re.attr for re in node.requests)
         self.request_management = request_management
         self.restrict = restrict
         self.restrict_time = restrict_time
-        self.route = route
+        self.net = net
         self.count = 0
 
     def install(self, node: QNode, simulator: Simulator):
-        # 事件添加的顺序与处理的机制应该没有影响？
         super().install(node, simulator)
         # self.request_list.sort(Request.attr["start time"])
-        for re in self.request_list:
-            t = re.attr["start time"]+simulator.ts
-            event = func_to_event(t, self.send_packet(re))
+        self._simulator = simulator
+        self._node = node
+        if len(self.request_list) > 0:
+            re = self.request_list.pop(0)
+            temp = re["attr"]["start time"]
+            t = temp+simulator.ts
+            # print(re.attr, t)
+            event = func_to_event(t, self.send_packet, re=re)
             self._simulator.add_event(event)
 
-    def send_packet(self, re: Request):
+    def send_packet(self, re: dict):
+        if len(self.request_list) > 0:
+            r = self.request_list.pop(0)
+            temp = r["attr"]["start time"]
+            t = temp+self._simulator.ts
+            # print(re.attr, t)
+            event = func_to_event(t, self.send_packet, re=r)
+            self._simulator.add_event(event)
+        src = re["src"]
+        dest = re["dest"]
+        attr = re["attr"]
+        if self._simulator.tc.time_slot > attr["start time"].time_slot + math.floor(attr["delay"]*accuracy):   # 无法服务
+            print(f"{src.name}->{dest.name} is failed in serving currently: {attr}")
+            self.fail_request.append(re)
+            return
         flag = False    # 是否有路径可以尝试发送
-        route_result = self.route.query(re.src, re.dest)
+        route_result = self.net.query_route(src, dest)
+        # print(re.src, re.dest, re.attr["start time"],  route_result)
         count = True
         index = float("inf")
         i = 0
         while i < len(route_result):  # 筛选出所有可行最短路径choice
             if route_result[i][0] > index:
                 break
-            if not check_realizable(route_result[i], self.restrict, self.restrict_time, re.attr["delay"]):  # 不可行
+            if not check_realizable(route_result[i], self.restrict, self.restrict_time, attr["delay"]):  # 不可行
                 del route_result[i]
                 continue
             if count:
@@ -227,23 +279,25 @@ class SendRequestApp(Application):
             flag = True
             path = route_result[0]
         if not flag:    # 没有路径可尝试
-            print(f"{re.src.name}->{re.dest.name} is failed in serving currently: {re.attr}")
+            print(f"{src.name}->{dest.name} is failed in serving currently: {attr}")
+            self.fail_request.append(re)
             return
         create_request_info(self.request_management, f"{self.get_node().name}-{self.count}", path)
+        # print(re, re.attr)
         path_list: list = path[2]
         for i in range(1, len(path_list)):
             # 中间节点，假设经典网络是.all，请求信息均可一跳到达
             next_hop = path_list[i]     # next_hop = self.route.query(re.src, path_list[i])[0][1]
-            cchannel: ClassicChannel = re.src.get_cchannel(next_hop)    # 找到传请求需要的经典link
+            cchannel: ClassicChannel = src.get_cchannel(next_hop)    # 找到传请求需要的经典link
             qchannel: QuantumChannel = path_list[i].get_qchannel(path_list[i-1])    # 找到需要预留资源的量子link
             packet = ClassicPacket(msg={"aim": "require", "symbol": f"{self.get_node().name}-{self.count}", "aimed qchannel": qchannel.name,  # f"{path_list[i-1].name}-{next_hop.name}",
-                                        "key requirement": re.attr["key requirement"], "delay": re.attr["delay"], "request times": re.attr["request times"]}, src=re.src, dest=next_hop)   # dest=path_list[i]
+                                        "key requirement": attr["key requirement"], "delay": attr["delay"], "request times": attr["request times"]}, src=src, dest=next_hop)   # dest=path_list[i]
             cchannel.send(packet=packet, next_hop=next_hop)
         self.count += 1
 
 
 class RecvRequestApp(Application):
-    def __init__(self, node: QNode, bb84rapps: list, bb84sapps: list, restrict: dict, restrict_time: dict, request_management: dict, already_accept: list = [], succ_request: list = []):
+    def __init__(self, net: QuantumNetwork, node: QNode, bb84rapps: list, bb84sapps: list, restrict: dict, restrict_time: dict, request_management: dict, already_accept: list = [], succ_request: list = []):
         # 已经接受可服务的，预留资源了
         super().__init__()
         self.already_accept = already_accept
@@ -253,105 +307,20 @@ class RecvRequestApp(Application):
         self.restrict_time = restrict_time
         self.request_management = request_management
         self.succ_request = succ_request
+
+    def install(self, node: QNode, simulator: Simulator):   # 为每条qchannel创建初始时间触发事件xxxxxxxxxxx  no need  first packet begin is ok
         self.qchannels = get_qchannel_list(node)
-        self.event_number_list, self.time_info, self.queue_list = initialize(self.qchannels)   # event strigger  time strigger  request queueing
+        self.event_number_list, self.time_info, self.queue_list, self.first_time_strigger = initialize(self.qchannels)
+        #   event strigger  time strigger  request queueing   'first' strigger
         self.add_handler(self.handleClassicPacket, [RecvClassicPacket], [])
-
-    def install(self, node: QNode, simulator: Simulator):   # 为每条qchannel创建初始时间触发事件
-        t = simulator.ts
-        str_t = t+Time(sec=time_trigger)
-        for qchannel in self.qchannels:
-            event = func_to_event(str_t, self.handletimer(qchannel.name))
-            simulator.add_event(event)
-
-    def handleClassicPacket(self, node: QNode, event: Event):
-        # receive a classic packet，假设目的节点就是本节点，否则被前方的app转发走了
-        if isinstance(event, RecvClassicPacket):
-            packet = event.packet
-            # get the packet message
-            msg = packet.get()
-            recv_time = event.t
-            # handling the receiving packet
-            aim_msg = msg.get("aim")
-            sym_msg = msg.get("symbol")
-            qchannel_name = msg.get("aimed qchannel")
-            request_times = msg.get("request times")
-            key_requirement = msg.get("key requirement")
-            delay_tolerance = msg.get("delay")
-            src = packet.src
-            if aim_msg == "require":    # 中间节点
-                flag = if_already_in(self.already_accept, sym_msg)   # 是否已经在准备服务的名单里
-                if not flag:
-                    temp: dict = {"symbol": sym_msg, "aimed qchannel": qchannel_name, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times, "src": src}
-                    self.queue_list[qchannel_name].append(temp)
-                    self.event_number_list[qchannel_name] += 1
-                    self.time_info[qchannel_name].append(recv_time)
-                    t = recv_time+Time(sec=time_trigger)    # 加入对应时间触发事件
-                    strigger = func_to_event(t, self.handletimer(qchannel_name))
-                    self._simulator.add_event(strigger)
-                    if self.event_number_list[qchannel_name] == event_trigger:  # 检查事件触发
-                        self.event_number_list[qchannel_name] = 0
-                        queue = self.queue_list[qchannel_name]
-                        self.queue_list[qchannel_name] = []
-                        self.distribution(queue, qchannel_name)
-            elif aim_msg == "answer":   # 源节点
-                content = msg.get("content")
-                if content == "yes":
-                    # 先加入链路同意的列表，判断整条路径上的链路均同意了，再加入到already_accept
-                    stamp: dict = self.request_management[sym_msg]
-                    if stamp.get("flag"):
-                        mass: dict = {"aimed qchannel": qchannel_name, "request times": request_times, "key requirement": key_requirement, "delay": delay_tolerance, "src": src}
-                        stamp["list"].append(mass)
-                        flag = check_if_is_over(self.request_management[sym_msg])
-                        if flag:
-                            dest = stamp["path"][2][-1]
-                            attr: dict = {"key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
-                            re = Request(src=self._node, dest=dest, attr=attr)
-                            self.succ_request.append(re)
-                    else:       # 此路径不可行，立即让其释放资源
-                        packet = ClassicPacket(msg={"aim": "delete", "symbol": sym_msg, "aimed qchannel": qchannel_name, "request times": request_times, "key requirement": key_requirement,
-                                                    "delay": delay_tolerance}, src=self._node, dest=src)
-                        cchannel: ClassicChannel = src.get_cchannel(self._node)     # route.query(self._node, src)
-                        cchannel.send(packet=packet, next_hop=src)
-                elif content == "no":
-                    # update restrict in sendrequestapp and release resource of other agreed links
-                    if self.restrict[qchannel_name] is True:
-                        if self.restrict_time[qchannel_name] < msg["time flag"]:
-                            self.restrict_time[qchannel_name] = msg["time flag"]
-                    else:
-                        self.restrict[qchannel_name] = True
-                        self.restrict_time[qchannel_name] = msg["time flag"]
-                    stamp: dict = self.request_management[sym_msg]
-                    if stamp.get("flag"):
-                        path = self.request_management[sym_msg]["path"]
-                        dest = path[2][-1]
-                        update_request_info(self._node, self.request_management, sym_msg)
-                        simulator: Simulator = self.get_simulator
-                        start_time = simulator.tc
-                        attr: dict = {"start time": start_time, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times+1}
-                        re = Request(src=self._node, dest=dest, attr=attr)
-                        t = re.attr["start time"]    # 重新寻路
-                        node: QNode = self._node
-                        app: Application = node.get_apps(SendRequestApp)
-                        event = func_to_event(t, app.send_packet(re))
-                        self._simulator.add_event(event)
-            elif aim_msg == "delete":
-                self.already_accept.remove(sym_msg)
-                send_bb84, recv_bb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel_name)    # time_flag and capacity
-                rate, cur_time_tolerance, time_span = get_info(send_bb84)
-                back_time = Time(math.floor(key_requirement / rate))
-                if back_time > time_span:
-                    simulator: Simulator = self.get_simulator
-                    send_bb84.time_flag = simulator.tc
-                    increase = rate*(back_time-time_span)
-                    if increase < send_bb84.pool_capacity:
-                        send_bb84.current_pool = increase
-                        recv_bb84.current_pool = increase
-                    else:
-                        send_bb84.current_pool = send_bb84.pool_capacity
-                        recv_bb84.current_pool = recv_bb84.pool_capacity
-                else:
-                    send_bb84.time_flag = cur_time_tolerance - back_time
+        
+        #   t = simulator.ts
+        #   str_t = t+Time(sec=time_trigger)
+        self._simulator = simulator
+        self._node = node
+        #   for qchannel in self.qchannels:
+        #    event = func_to_event(str_t, self.handletimer, qchannel_name=qchannel.name)   # None, None,
+        #    simulator.add_event(event)
 
     def distribution(self, queue: list, qchannel_name: str):
         sorted_queue = queue_sort(queue)
@@ -368,19 +337,16 @@ class RecvRequestApp(Application):
                 send_bb84.current_pool -= key_requirement
                 sig = True
             else:
-                recv_bb84.current_pool = 0
-                send_bb84.current_pool = 0
                 key_requirement_temp = key_requirement - cur_pool
                 # 再看考虑未来产生的密钥
-                rate, cur_time_tolerance, time_span = get_info(send_bb84)
-                time_flag = cur_time_tolerance
-                max_key = rate*(delay_tolerance - time_span)
+                rate, time_flag, time_span = get_info(send_bb84)
+                max_key = rate*(delay_tolerance - time_span/accuracy)
                 if key_requirement_temp <= max_key:  # 更新time_flag
+                    recv_bb84.current_pool = 0
+                    send_bb84.current_pool = 0
                     sig = True
-                    t = key_requirement_temp / rate
-                    temp = Time(sec=t)
-                    cur_time_tolerance += temp
-                    send_bb84.time_flag = cur_time_tolerance
+                    t = key_requirement_temp / rate * accuracy
+                    send_bb84.time_flag = t + time_flag
             aim_msg = "answer"
             sym_msg: str = item["symbol"]
             request_times = item["request times"]
@@ -410,3 +376,104 @@ class RecvRequestApp(Application):
                 queue = self.queue_list[qchannel_name]
                 self.queue_list[qchannel_name] = []
                 self.distribution(queue, qchannel_name)
+                self.first_time_strigger[qchannel_name] = True
+
+    def handleClassicPacket(self, node: QNode, event: Event):
+        # receive a classic packet，假设目的节点就是本节点，否则被前方的app转发走了
+        if isinstance(event, RecvClassicPacket):
+            packet = event.packet
+            # get the packet message
+            msg = packet.get()
+            recv_time = event.t
+            # handling the receiving packet
+            aim_msg = msg.get("aim")
+            sym_msg = msg.get("symbol")
+            qchannel_name = msg.get("aimed qchannel")
+            request_times = msg.get("request times")
+            key_requirement = msg.get("key requirement")
+            delay_tolerance = msg.get("delay")
+            src = packet.src
+            if aim_msg == "require":    # 中间节点
+                flag = if_already_in(self.already_accept, (sym_msg, qchannel_name))   # 是否已经在准备服务的名单里
+                if not flag:
+                    temp: dict = {"symbol": sym_msg, "aimed qchannel": qchannel_name, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times, "src": src}
+                    self.queue_list[qchannel_name].append(temp)
+                    self.event_number_list[qchannel_name] += 1
+                    if self.first_time_strigger.get(qchannel_name) is True:
+                        self.first_time_strigger[qchannel_name] = False
+                    else:
+                        self.time_info[qchannel_name].append(recv_time)
+                    t = recv_time+Time(sec=time_trigger)    # 加入对应时间触发事件
+                    strigger = func_to_event(t, self.handletimer, qchannel_name=qchannel_name)    # , None, None
+                    s = self._simulator
+                    s.add_event(strigger)
+                    if self.event_number_list[qchannel_name] == event_trigger:  # 检查事件触发
+                        self.event_number_list[qchannel_name] = 0
+                        queue = self.queue_list[qchannel_name]
+                        self.queue_list[qchannel_name] = []
+                        self.distribution(queue, qchannel_name)
+            elif aim_msg == "answer":   # 源节点
+                content = msg.get("content")
+                if content == "yes":
+                    # 先加入链路同意的列表，判断整条路径上的链路均同意了，再加入到already_accept
+                    stamp = self.request_management[sym_msg]
+                    if stamp.get("flag"):
+                        mass: dict = {"aimed qchannel": qchannel_name, "request times": request_times, "key requirement": key_requirement, "delay": delay_tolerance, "src": src}
+                        stamp["list"].append(mass)
+                        flag = check_if_is_over(self.request_management[sym_msg])
+                        if flag:
+                            dest = stamp["path"][2][-1]
+                            attr: dict = {"key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
+                            re = Request(src=self._node, dest=dest, attr=attr)
+                            self.succ_request.append(re)
+                            # print(self.succ_request)
+                    else:       # 此路径不可行，立即让其释放资源
+                        packet = ClassicPacket(msg={"aim": "delete", "symbol": sym_msg, "aimed qchannel": qchannel_name, "key requirement": key_requirement}, src=self._node, dest=src)
+                        cchannel: ClassicChannel = src.get_cchannel(self._node)     # route.query(self._node, src)
+                        cchannel.send(packet=packet, next_hop=src)
+                elif content == "no":
+                    # update restrict in sendrequestapp and release resource of other agreed links
+                    time = msg["time flag"]
+                    simulator: Simulator = self._simulator
+                    if self.restrict[qchannel_name] is True:
+                        if self.restrict_time[qchannel_name] < time:
+                            self.restrict_time[qchannel_name] = time
+                    elif simulator.tc.time_slot < time:
+                        self.restrict[qchannel_name] = True
+                        self.restrict_time[qchannel_name] = time
+                    stamp = self.request_management[sym_msg]
+                    if stamp.get("flag"):
+                        path = self.request_management[sym_msg]["path"]
+                        dest = path[2][-1]
+                        start_time = simulator.tc
+                        request_times += 1
+                        attr: dict = {"start time": start_time, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
+                        #   re = Request(src=self._node, dest=dest, attr=attr)
+                        re: dict = {}
+                        re["src"] = src
+                        re["dest"] = dest
+                        re["attr"] = attr
+                        # 重新寻路
+                        node: QNode = self._node
+                        app: Application = node.get_apps(SendRequestApp).pop(0)
+                        event = func_to_event(start_time, app.send_packet, re=re)   # , None, None
+                        simulator.add_event(event)
+                        update_request_info(self._node, self.request_management, sym_msg)
+            elif aim_msg == "delete":
+                if if_already_in(self.already_accept, (sym_msg, qchannel_name)):
+                    self.already_accept.remove((sym_msg, qchannel_name))
+                    send_bb84, recv_bb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel_name)    # time_flag and capacity
+                    rate, cur_time_tolerance, time_span = get_info(send_bb84)
+                    back_time = key_requirement / rate * accuracy
+                    if back_time > time_span:
+                        simulator: Simulator = self._simulator
+                        send_bb84.time_flag = simulator.tc.time_slot
+                        increase = math.floor(rate*(back_time-time_span)/accuracy)
+                        if increase < send_bb84.pool_capacity:
+                            send_bb84.current_pool += increase
+                            recv_bb84.current_pool += increase
+                        else:
+                            send_bb84.current_pool = send_bb84.pool_capacity
+                            recv_bb84.current_pool = recv_bb84.pool_capacity
+                    else:
+                        send_bb84.time_flag = cur_time_tolerance - back_time
