@@ -311,7 +311,7 @@ class RecvRequestApp(Application):
         self.qchannels = get_qchannel_list(node)
         self.event_number_list, self.time_info, self.queue_list, self.first_time_strigger = initialize(self.qchannels)
         #   event strigger  time strigger  request queueing   'first' strigger
-        self.add_handler(self.handleClassicPacket, [RecvClassicPacket], [])     
+        self.add_handler(self.handleClassicPacket, [RecvClassicPacket], [])
         #   t = simulator.ts
         #   str_t = t+Time(sec=time_trigger)
         self._simulator = simulator

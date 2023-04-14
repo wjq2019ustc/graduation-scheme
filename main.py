@@ -23,14 +23,14 @@ light_speed = 299791458
 send_rate = 10
 s_time = 0
 e_time = end_simu_time - 90
-s_request = 400
-e_request = 500
+s_request = 10
+e_request = 200
 s_delay = 10
 e_delay = end_simu_time     # float('inf')
 accuracy = 100000
 
-for node_num in [10]:   # , 100, 150, 200, 250
-    for i in range(1, 2):
+for node_num in [100]:   # , 100, 150, 200, 250
+    for i in range(2, 3):
         request_num = int(i * node_num)
         s = Simulator(0, end_simu_time, accuracy)
         topo = RandomTopology(nodes_number=node_num, lines_number=math.floor(node_num**2/4), qchannel_args={"delay": q_length / light_speed, "drop_rate": drop_rate(q_length)},
@@ -102,3 +102,4 @@ for node_num in [10]:   # , 100, 150, 200, 250
             print(node.name, len(net_fail_request[node.name]))
             fail_number += 1
             # print(net_fail_request[node.name])
+        print(succ_number, fail_number)
