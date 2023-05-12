@@ -19,11 +19,12 @@ import math
 #        net.nodes[index].requests.append(re)
 event_trigger = 3
 time_trigger = 2    # second
-request_times_restrict = 4
-packet_length = 20
-max_trival_number = 100
+request_times_restrict = 5
+#   packet_length = 20
+waiting_resource_time = 2 / 30
+max_routing_times = 1000
 
-accuracy = 100000  # {default_accuracy} time slots per second
+accuracy = 100  # {default_accuracy} time slots per second
 
 
 def start_time_order(re_list: list[Request], s: int, e: int):
@@ -261,8 +262,8 @@ class SendRequestApp(Application):
         src = re.src
         dest = re.dest
         attr = re.attr
-        if self._simulator.tc.time_slot > attr["start time"].time_slot + math.floor(attr["delay"]*accuracy) or attr["request times"] > max_trival_number:   # 无法服务
-            print(f"{src.name}->{dest.name} is failed in serving currently: {attr}")
+        if attr["request times"] > max_routing_times:   # 无法服务``
+            print(f"{src.name}->{dest.name} is failed in serving currently(too many tries): {attr}")
             self.fail_request.append(re)
             return
         flag = False    # 是否有路径可以尝试发送
@@ -296,6 +297,10 @@ class SendRequestApp(Application):
         if first_send:
             start = 0
             route_result = self.net.query_route(src, dest)
+            if len(route_result) == 0:
+                print(f"{src.name}->{dest.name} is failed in serving currently: {attr}")
+                self.fail_request.append(re)
+                return
         else:
             route_result = self.request_management[sym_former]["path list"]
             start = (self.request_management[sym_former]["path index"] + 1) % len(route_result)
@@ -310,10 +315,15 @@ class SendRequestApp(Application):
             if i == start:
                 break
         if not flag:    # 没有路径可尝试
-            print(f"{re} is failed in serving currently: {attr}")
-            self.fail_request.append(re)
+            t = self._simulator.tc + Time(sec=waiting_resource_time)
+            attr["request times"] += 1
+            if not first_send:
+                event = func_to_event(t, self.send_packet, re=re, first_send=False, sym_former=sym_former)   # , None, None
+            else:
+                event = func_to_event(t, self.send_packet, re=re)
+            self._simulator.add_event(event)
             return
-        # print(re, re.attr)
+        print("routing:", re, re.attr)
         create_request_info(self.request_management, symbol, route_result, i, re)
         path_list: list = path[2]
         for i in range(1, len(path_list)):
@@ -496,42 +506,41 @@ class RecvRequestApp(Application):
                         stamp["list"].append(mass)
                         flag = check_if_is_over(self.request_management[sym_msg])
                         if flag:
-                            index = stamp["path index"]
-                            path_list = stamp["path list"]
-                            path = path_list[index][2]
-                            dest = path[-1]
+                            # index = stamp["path index"]
+                            # path_list = stamp["path list"]
+                            # path = path_list[index][2]
+                            # dest = path[-1]
                             # attr: dict = {"key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
-                            # re = Request(src=self._node, dest=dest, attr=attr)
-                            # self.succ_request.append(re)
-                            tc_slot = self._simulator.tc.time_slot
-                            self.request_management[sym_msg]["start routing"] = tc_slot
-                            self.request_management[sym_msg]["packet number"] = math.ceil(key_requirement / packet_length)
-                            #   print("start routing: ", self.request_management[sym_msg])
-                            order = 0
-                            #   sendapp = self._node.get_apps(SendRoutingApp).pop(0)
-                            next_hop = path[1]
-                            qchannel: QuantumChannel = self._node.get_qchannel(next_hop)
-                            sendbb84, recvbb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel.name)
-                            if sendbb84.get_node() == self._node:     # 保证在自己的节点上面排队
-                                app = sendbb84
-                            elif recvbb84.get_node() == self._node:
-                                app = recvbb84
-                            while key_requirement > 0:  # 发送数据包
-                                order += 1
-                                if key_requirement >= packet_length:
-                                    mssg = {"symbol": sym_msg, "aim": "routing", "order": order, "length": packet_length, "dest": dest.name, "src": self._node.name,
-                                            "start routing time": self.request_management[sym_msg]["start routing"], "delay": delay_tolerance}
-                                    #   event = func_to_event(self._simulator.tc, sendapp.send_app_packet, info=info, order=order, data_packet_length=packet_length, first_node=True)   # , None, None
-                                    key_requirement -= packet_length
-                                    app.waiting_length_queue.append(packet_length)
-                                else:
-                                    app.waiting_length_queue.append(key_requirement)
-                                    mssg = {"symbol": sym_msg, "aim": "routing", "order": order, "length": key_requirement, "dest": dest.name, "src": self._node.name,
-                                            "start routing time": self.request_management[sym_msg]["start routing"], "delay": delay_tolerance}
-                                    #   event = func_to_event(self._simulator.tc, sendapp.send_app_packet, info=info, order=order, data_packet_length=key_requirement, first_node=True)
-                                    key_requirement = 0
-                                #   self._simulator.add_event(event)
-                                app.waiting_msg_queue.append(mssg)
+                            self.succ_request.append(sym_msg)
+                            # tc_slot = self._simulator.tc.time_slot
+                            # self.request_management[sym_msg]["start routing"] = tc_slot
+                            # self.request_management[sym_msg]["packet number"] = math.ceil(key_requirement / packet_length)
+                            # #   print("start routing: ", self.request_management[sym_msg])
+                            # order = 0
+                            # #   sendapp = self._node.get_apps(SendRoutingApp).pop(0)
+                            # next_hop = path[1]
+                            # qchannel: QuantumChannel = self._node.get_qchannel(next_hop)
+                            # sendbb84, recvbb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel.name)
+                            # if sendbb84.get_node() == self._node:     # 保证在自己的节点上面排队
+                            #     app = sendbb84
+                            # elif recvbb84.get_node() == self._node:
+                            #     app = recvbb84
+                            # while key_requirement > 0:  # 发送数据包
+                            #     order += 1
+                            #     if key_requirement >= packet_length:
+                            #         mssg = {"symbol": sym_msg, "aim": "routing", "order": order, "length": packet_length, "dest": dest.name, "src": self._node.name,
+                            #                 "start routing time": self.request_management[sym_msg]["start routing"], "delay": delay_tolerance}
+                            #         #   event = func_to_event(self._simulator.tc, sendapp.send_app_packet, info=info, order=order, data_packet_length=packet_length, first_node=True)   # , None, None
+                            #         key_requirement -= packet_length
+                            #         app.waiting_length_queue.append(packet_length)
+                            #     else:
+                            #         app.waiting_length_queue.append(key_requirement)
+                            #         mssg = {"symbol": sym_msg, "aim": "routing", "order": order, "length": key_requirement, "dest": dest.name, "src": self._node.name,
+                            #                 "start routing time": self.request_management[sym_msg]["start routing"], "delay": delay_tolerance}
+                            #         #   event = func_to_event(self._simulator.tc, sendapp.send_app_packet, info=info, order=order, data_packet_length=key_requirement, first_node=True)
+                            #         key_requirement = 0
+                            #     #   self._simulator.add_event(event)
+                            #     app.waiting_msg_queue.append(mssg)
                             # print(self.succ_request)
                     else:       # 此路径不可行，立即让其释放资源
                         packet = ClassicPacket(msg={"aim": "delete", "symbol": sym_msg, "aimed qchannel": qchannel_name, "key requirement": key_requirement}, src=self._node, dest=src)
@@ -556,8 +565,10 @@ class RecvRequestApp(Application):
                         self.request_management[sym_msg]["flag"] = False
                         start_time = simulator.tc
                         request_times += 1
-                        attr: dict = {"start time": start_time, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
-                        re = Request(src=self._node, dest=dest, attr=attr)
+                        #   attr: dict = {"start time": start_time, "key requirement": key_requirement, "delay": delay_tolerance, "request times": request_times}
+                        re = self.request_management[sym_msg]["re"]
+                        re.attr["request times"] += 1
+                        #   Request(src=self._node, dest=dest, attr=attr)
                         node: QNode = self._node
                         app: Application = node.get_apps(SendRequestApp).pop(0)
                         event = func_to_event(start_time, app.send_packet, re=re, first_send=False, sym_former=sym_msg)   # , None, None
@@ -585,38 +596,38 @@ class RecvRequestApp(Application):
                     else:
                         send_bb84.time_flag = future_time_flag
                         #   send_bb84.time_flag = cur_time_tolerance - back_time
-            elif aim_msg == "routing":
-                order = msg["order"]
-                if msg["dest"] == self._node.name:  # 给源端反馈
-                    answer: dict = {"symbol": sym_msg, "aim": "routing answer", "answer": "yes", "order": order, "receiving time": self._simulator.tc.time_slot}
-                    next_hop = self.net.get_node(msg["src"])
-                    cchannel: ClassicChannel = self._node.get_cchannel(next_hop)
-                    packet = ClassicPacket(msg=answer, src=self._node, dest=next_hop)
-                    cchannel.send(packet=packet, next_hop=next_hop)
-                else:
-                    sendre = self._node.get_apps(SendRequestApp).pop(0)
-                    if sendre.reject_app_packet_symbol.get(sym_msg) is None:
-                        #   前序包均已在此链路上路由成功，没有超过延时
-                        length = msg["length"]
-                        next_hop = sendre.routing_table[sym_msg]
-                        qchannel: QuantumChannel = self._node.get_qchannel(next_hop)
-                        sendbb84, recvbb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel.name)
-                        if sendbb84.get_node() == self._node:
-                            app = sendbb84
-                        elif recvbb84.get_node() == self._node:
-                            app = recvbb84
-                        app.waiting_length_queue.append(length)
-                        app.waiting_msg_queue.append(msg)
-            elif aim_msg == "routing answer":  # is sent by dest
-                order = msg["order"]
-                if self.request_management[sym_msg]["packet arrival"].get(order) is None:
-                    answer = msg["answer"]
-                    if answer == "yes":
-                        self.request_management[sym_msg]["packet arrival"][order] = True
-                        if len(self.request_management[sym_msg]["packet arrival"]) == self.request_management[sym_msg]["packet number"]:
-                            self.request_management[sym_msg]["end routing"] = msg["receiving time"]
-                            re = self.request_management[sym_msg]["re"]
-                            self.succ_request.append(re)
-                    elif answer == "no":
-                        re = self.request_management[sym_msg]["re"]
-                        self.fail_request.append(re)
+            # elif aim_msg == "routing":
+            #     order = msg["order"]
+            #     if msg["dest"] == self._node.name:  # 给源端反馈
+            #         answer: dict = {"symbol": sym_msg, "aim": "routing answer", "answer": "yes", "order": order, "receiving time": self._simulator.tc.time_slot}
+            #         next_hop = self.net.get_node(msg["src"])
+            #         cchannel: ClassicChannel = self._node.get_cchannel(next_hop)
+            #         packet = ClassicPacket(msg=answer, src=self._node, dest=next_hop)
+            #         cchannel.send(packet=packet, next_hop=next_hop)
+            #     else:
+            #         sendre = self._node.get_apps(SendRequestApp).pop(0)
+            #         if sendre.reject_app_packet_symbol.get(sym_msg) is None:
+            #             #   前序包均已在此链路上路由成功，没有超过延时
+            #             length = msg["length"]
+            #             next_hop = sendre.routing_table[sym_msg]
+            #             qchannel: QuantumChannel = self._node.get_qchannel(next_hop)
+            #             sendbb84, recvbb84 = search_app(self.connect_bb84sapps, self.connect_bb84rapps, qchannel.name)
+            #             if sendbb84.get_node() == self._node:
+            #                 app = sendbb84
+            #             elif recvbb84.get_node() == self._node:
+            #                 app = recvbb84
+            #             app.waiting_length_queue.append(length)
+            #             app.waiting_msg_queue.append(msg)
+            # elif aim_msg == "routing answer":  # is sent by dest
+            #     order = msg["order"]
+            #     if self.request_management[sym_msg]["packet arrival"].get(order) is None:
+            #         answer = msg["answer"]
+            #         if answer == "yes":
+            #             self.request_management[sym_msg]["packet arrival"][order] = True
+            #             if len(self.request_management[sym_msg]["packet arrival"]) == self.request_management[sym_msg]["packet number"]:
+            #                 self.request_management[sym_msg]["end routing"] = msg["receiving time"]
+            #                 re = self.request_management[sym_msg]["re"]
+            #                 self.succ_request.append(re)
+            #         elif answer == "no":
+            #             re = self.request_management[sym_msg]["re"]
+            #             self.fail_request.append(re)
